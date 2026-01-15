@@ -1,4 +1,4 @@
-# 16S_Amplicon_Sequencing
+#Amplicon Sequencing
 Scripts and workflows for 16S and variable length (18S, ITS) amplicon sequencing.
 
 This repository contains scripts and workflows for processing amplicon sequencing data with DADA2 (16S, 18S, ITS) or QIIME2 (16S).
