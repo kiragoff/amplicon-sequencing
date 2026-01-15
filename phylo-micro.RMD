@@ -7,9 +7,12 @@ editor_options:
   chunk_output_type: console
 ---
 This script Kira Goff, 2025.
-Based on https://joey711.github.io/phyloseq/ and
-https://david-barnett.github.io/microViz/articles/shao19-analyses.html.
 
+Combines my own work, as well as a phyloseq overview https://joey711.github.io/phyloseq/ and
+microViz https://david-barnett.github.io/microViz/articles/shao19-analyses.html, 
+and tips and tricks from https://rpubs.com/telatin/day3-tutorial
+
+If you need a fresh version, please see https://github.com/kiragoff/16S_Amplicon_Sequencing
 ---
 #Setup
 
@@ -30,8 +33,8 @@ rm(list = ls(all = TRUE))
 Set working directory (where you want the final files to go). Sometimes, for some reason, you have to run this twice. 
 If you continue to have trouble, make sure this script is in your desired folder, close R, then open R from this RMD file. 
 ```{r set-directory}
-wd <- setwd("/path/to/your/directory") # CHANGE THIS to a folder in your directory. 
-#You can get this information by opening a terminal window from within the desired folder, typing 'pwd,' and hitting enter. This will print the full path.
+wd <- setwd("/path/to/your/directory") # CHANGE THIS to a folder in your directory.
+# You can get this information by opening a terminal window from within the desired folder, typing 'pwd,' and hitting enter. This will print the full path.
 ```
 
 If it's your first time or you have recently updated R, you may have to install one or all of these packages. 
@@ -276,10 +279,11 @@ system2(fasttree, args = c(
   ">", "tree.nwk"
 ))
 ```
+If you're running this on another computer, you will have to:
+1) install muscle and fasttree; and
+2) update the file path pointers to where they live
 
 For ~8k ASVs, alignment took 3 minutes. Tree building took under a minute.
-
-If you're on a different computer, change the paths to wherever you keep MUSCLE and FastTree
 
 
 Read in your tree and attach it to your phyloseq object. If you didn't make a tree, DO NOT run this. 
@@ -334,11 +338,14 @@ Remove the sequences and samples you don't want.
 # Change as needed for whichever taxa you're focusing on
 ps.clean <- ps.fixed %>%
   subset_taxa(
-    Kingdom != "Eukaryota" & # no eukaryotes
-      Kingdom != "Unclassified" & # no Unclassified
+    Kingdom == "Bacteria" & # Bacteria
       Family != "Mitochondria" & # filter out mitochondria
       Class != "Chloroplast" & # filter out chloroplasts
-      Order != "Chloroplast"
+      Order != "Chloroplast" |
+      Kingdom == "Archaea" & # Archaea
+        Family != "Mitochondria" & # filter out mitochondria
+        Class != "Chloroplast" & # filter out chloroplasts
+        Order != "Chloroplast"
   )
 
 # Remove samples whose name contains a keyword (here, "dummy", which are duplicates from singlet sequences)
@@ -404,11 +411,40 @@ ps.set1
 Make sure you're using whichever object/data subset you want to work with from here on out. 
 See Stats_overview.txt for a high level view of different types of statistical analysis and when to use them.
 
+#PLOT ABUNDANCES
+Now that you have the object you're going to be working with
+it's a good idea to graph out how many reads are present in the samples.
+It will help guide downstream interpretation. 
+```{r bar-chart-absolute-abundances}
+plot_bar(ps.set1,
+  x = "sample.names", # how bars are defined, will stack if multiple samples fit within the facet
+  fill = "Phylum" # classification level for for colour coding
+) +
+  # facet_wrap(~ source + sub, # metadata used to split graphs, remove if wanted
+  #   scales = "fixed", # fixed, free, free_x, free_y
+  #   #   ncol=1,
+  #    dir="v" #direction the facet goes, "h" or "v"
+  #  ) +
+  ggtitle("Number of Reads") +
+  labs(caption = "No relative abundance filtering after sample filtering")
+# scale_fill_paletteer_d("Polychrome::palette36") + # use Paletteer to choose colour schemes
+# # add other ggplot2 options as desired
+# guides(fill = guide_legend(ncol = 1)) # how many columns (or rows) to make your legend(s)
+# #scale_color_paletteer_d("LaCroixColoR::paired") + # Use Paletteer to choose colour scheme
+# theme(
+#   legend.position = "bottom", # where to place the legend(s)
+#   legend.box = "vertical"
+# ) # how to stack multiple legends
+
+ggsave("xxx-bars-abundances-nowrap.png")
+```
+
 
 #ALPHA DIVERSITY
 
 Available indexes: Observed, Chao1, ACE, Shannon, Simpson, InvSimpson (Inverse Simpson), and Fisher.
-Inverse Simpson (InvSimpson) plots better than Simpson, because higher values indicate MORE diversity, which lines up with other measures.
+Inverse Simpson (InvSimpson) plots better than Simpson.
+Higher values indicate MORE diversity, which lines up with other measures.
 
 Use your metadata table to colour your points, define their shape, and decide how to aggregate samples.
 Try to keep "shape" to a smaller number of variables, or it will look messy.
@@ -546,7 +582,7 @@ PCA_plot <- ps1.X %>%
     axes = c(1, 2), # which principal components to plot. 1,2 will explain the most variance.
     colour = "sal.temp", # metadata column for colour coding
     shape = "biocide", # metadata column to define shapes
-    size = 3,
+    size = 3, #size of points
     plot_taxa = 1:10, # how many taxa to plot, see below for other options
     tax_vec_length = 2.75, # how long the taxa loading lines are; use x>0, or NA for autoscaling
     tax_lab_style = tax_lab_style(
@@ -600,7 +636,7 @@ Plot bar charts in a circular manner, arranged via PCA ordination from pca_from_
 ```{r iris-diagram-from-Xtra}
 irisPlot <- ps1.X %>% # uses the data from Xtra object above
   ord_plot_iris(
-    axes = c(1, 2), # axes used for ordering bars - accepts 1 or 2 axes, but they don't have to be axes 1 and 2
+    axes = c(1, 2), # axes used for ordering bars - accepts two axes, but they don't have to be axes 1 and 2
     tax_level = "Genus", # use "unique" for ASV-level data
     n_taxa = 14, # number of named taxa to display
     anno_colour = "sal.temp", # add external mark for metadata with multiple values
@@ -621,11 +657,13 @@ ggsave("xxx-iris-xxx.png")
 ```
 
 
-Optional: Make side by side plots! You might want them organized differently than when you're using them as stand-alones.
+Optional: Make side by side plots! 
+You might want them organized differently than when you're using them as stand-alones.
 
-This chunk currently gives you a couple of ways to arrange them.
+This chunk currently gives you a couple of ways to arrange them. 
+Play around with the settings until it looks how you'd like.
 ```{r output-pca-iris-pair}
-# #1. Using patchwork
+# 1. Using patchwork
 patchwork::wrap_plots(PCA_plot, irisPlot,
   ncol = 2, nrow = 1,
   guides = "keep",
@@ -639,6 +677,7 @@ ggsave("xxx-pca-iris-patchwork.png",
 
 # 2. Using wrap_plots, change organization of each plot as desired
 p1 <- PCA_plot +
+  # define layout options for PCA plot
   theme(
     legend.position = "right",
     legend.justification = "left",
@@ -647,6 +686,7 @@ p1 <- PCA_plot +
   guides(fill = guide_legend(nrow = 2)) # can add positional info here
 
 p2 <- irisPlot +
+  # define layout options for iris diagram
   theme(
     legend.position = "right",
     legend.box = "vertical"
@@ -669,6 +709,9 @@ After you have a plot that you like the looks of, clicking the </> code button w
 ord_explore(ps.set1)
 ```
 
+```{r empty-chunk-for-ord-explore}
+```
+Don't forget to use ggsave if you want to save this graph. 
 
 ##Gunifrac/unifrac beta diversity
 
@@ -698,7 +741,7 @@ ps1.01per <- root_phyloseq_tree(ps1.01per)
 ```
 
 ```{r gunifrac-interactive-beta-diversity}
-# launch ord explore
+# launch ord explore with with unifrac capabilities
 ord_explore(ps1.01per)
 ```
 
@@ -980,7 +1023,11 @@ You'll have to use the following style of code to save any of the ape trees
 Replace plot(subtree) with the plot() from whichever tree you'd like to save
 Adjust save options to your liking
 ```{r save-ape-tree}
-pdf(file = "trm1.pdf", width = 10, height = 6)
+pdf(
+  file = "trm1.pdf", # optional: replace 'pdf' with your desired file format
+  width = 10,
+  height = 6
+)
 plot(subtree)
 dev.off()
 ```
@@ -1062,7 +1109,7 @@ plot_heatmap(ps1.Xper,
   na.value = "black" # colour for null values/taxa absent from a sample
 )
 
-ggsave("xxx-heatmap-xper.png")
+ggsave("xxx-heatmap-Xpercent.png")
 ```
 
 
@@ -1096,6 +1143,9 @@ Choose how to filter your data for display here:
 Common options are top X taxa or everything above X percent relative abundance. 
 Add or remove ggplot2 options as desired
 
+If you want to work with absolute abundances, use ps.set1 as the plot object
+For example, "plot_bar(genus.X," would be "plot_bar(ps.set1"
+
 This chunk has more ggplot2 options as an example of what you can add to others
 ```{r bargraph-top-X-genera}
 # collapse to genera
@@ -1110,7 +1160,7 @@ genus.X <- prune_taxa(sg.X, genus.X)
 
 # Make your bar graph
 plot_bar(genus.X,
-  x = "sample.names", # how bars are defined, will stack if multiple samples fit the variable
+  x = "Primer.Region", # how bars are defined, will stack if multiple samples fit the variable
   fill = "Genus" # classification level for for colour coding
 ) +
   facet_wrap(~sub, # metadata used to split graphs
@@ -1140,7 +1190,7 @@ plot_bar(genus.X,
     limits = c(0, 1) # set the top of the axis at 1 instead of autoscaling
   )
 # add other ggplot2 options as desired
-ggsave("xxx-bg-Xgenera.png")
+ggsave("xxx-bars-Xgenera.png")
 ```
 
 ```{r bargraph-top-X-ASVs}
@@ -1156,29 +1206,206 @@ plot_bar(ps1.topX,
 #            scales="free_x" #fixed, free, free_x, free_y
 #     )
 # add other ggplot2 options as desired
-ggsave("xxx-bg-topXasvs.png")
+ggsave("xxx-bars-topXasvs.png")
 ```
 
 
 ```{r bargraph-above-x-percent}
-ps1.prop <- ps.set1 %>%
+ps1.genus <- tax_glom(ps.set1, taxrank = "Genus") # collapse to genera
+ps1.genus <- prune_taxa(taxa_sums(ps1.genus) > 0, ps1.genus)
+ps1.prop <- ps1.genus %>%
   tax_transform(trans = "compositional")
 
 # filter out taxa that that have a maximum relative abundance of less than 5% (0.05)
-psF <- filter_taxa(ps1.prop, function(x) max(x) < 0.05, TRUE) # desired relative abundance limit
+psF <- filter_taxa(ps1.prop, function(x) max(x) < 0.03, TRUE) # desired relative abundance limit
+rmtaxa <- taxa_names(psF)
+alltaxa <- taxa_names(ps1.prop)
+myTaxa <- alltaxa[!alltaxa %in% rmtaxa]
+ps1.Xper <- prune_taxa(myTaxa, ps1.prop)
+plot_bar(ps1.Xper,
+  x = "Primer.Region", # how bars are defined, will stack if multiple samples fit the variable
+  fill = "Family" # classification level for for colour coding
+) +
+  facet_wrap(~ source + sub, # metadata used to split graphs: comment this section out if you'd like a single bar chart
+    scales = "fixed", # fixed, free, free_x, free_y
+    #   ncol=1,
+    # dir="v"
+  ) +
+  scale_fill_paletteer_d("Polychrome::palette36") + # use Paletteer to choose colour schemes
+  # add other ggplot2 options as desired
+  guides(fill = guide_legend(ncol = 1)) # how many columns (or rows) to make your legend(s)
+# #scale_color_paletteer_d("LaCroixColoR::paired") + # Use Paletteer to choose colour scheme
+# theme(
+#   legend.position = "bottom", # where to place the legend(s)
+#   legend.box = "vertical"
+# ) # how to stack multiple legends
+
+ggsave("xxx-bars-Xpercent.png")
+```
+
+```{r bargraph-absolute-abundances}
+plot_bar(ps.set1,
+  x = "culture", # how bars are defined, will stack if multiple samples fit within the facet
+  fill = "Kingdom" # classification level for for colour coding
+) +
+  facet_wrap(~Primer.Region, # metadata used to split graphs, remove if wanted
+    scales = "fixed", # fixed, free, free_x, free_y
+    #   ncol=1,
+    dir = "v" # direction the facet goes, "h" (horizontal) or "v" (vertical )
+  ) +
+  ggtitle("Number of Reads") +
+  labs(caption = "Abundances below 0.001% were considered absent")
+# scale_fill_paletteer_d("Polychrome::palette36") + # use Paletteer to choose colour schemes
+# # add other ggplot2 options as desired
+# guides(fill = guide_legend(ncol = 1)) # how many columns (or rows) to make your legend(s)
+# #scale_color_paletteer_d("LaCroixColoR::paired") + # Use Paletteer to choose colour scheme
+# theme(
+#   legend.position = "bottom", # where to place the legend(s)
+#   legend.box = "vertical"
+# ) # how to stack multiple legends
+
+ggsave("xxx-bars-abundances-byregion.png")
+```
+
+
+#BUBBLE PLOTS
+If you want to work with absolute abundances, use ps.set1 as the plot object
+For example, "my.bars <- plot_bar(ps1.Xper)" would be "my.bars <- plot_bar(ps.set1)"
+and "maxC <- max(otu_table(ps1.Xper))" would be maxC <- max(otu_table(ps.set1))
+
+
+```{r bubble-chart-X-percent-basic}
+# collapse to genera and transform counts to composition
+ps1.genus <- tax_glom(ps.set1, taxrank = "Genus") # collapse to genera
+ps1.genus <- prune_taxa(taxa_sums(ps1.genus) > 0, ps1.genus)
+ps1.prop <- ps1.genus %>%
+  tax_transform(trans = "compositional")
+# optional: multiply by 100 to get % as whole numbers
+ps1.prop <- transform_sample_counts(ps1.prop, function(ASV) ASV * 100)
+
+# filter out taxa that that have a maximum relative abundance of less than 5%
+psF <- filter_taxa(
+  ps1.prop,
+  function(x) max(x) < 5, # desired relative abundance limit
+  TRUE
+)
 rmtaxa <- taxa_names(psF)
 alltaxa <- taxa_names(ps1.prop)
 myTaxa <- alltaxa[!alltaxa %in% rmtaxa]
 ps1.Xper <- prune_taxa(myTaxa, ps1.prop)
 
-plot_bar(ps1.Xper,
-  x = "Sample", # how bars are defined, will stack if multiple samples fit the variable
-  fill = "Genus" # classification level for for colour coding
-) +
-  facet_wrap(~sal.temp, # metadata used to split graphs: comment this section out if you'd like a single bar chart
-    scales = "free_x" # fixed, free, free_x, free_y
+# make a base chart and remove the bars
+my.bars <- plot_bar(ps1.Xper)
+my.bars$layers <- my.bars$layers[-1]
+
+# sets maximum relative abundance for figure legend dimensions
+maxC <- max(otu_table(ps1.Xper))
+
+
+# replace with bubble plot
+bubbles <- my.bars +
+  geom_point(
+    aes_string(
+      x = "Sample", # variable for x-axis
+      y = "Genus",
+      size = "Abundance", # size of bubble is based on abundance
+      color = "Phylum" # coloured based on this taxonomic level
+    ),
+    alpha = 0.7 # opacity of bubbles 0.7=70% opaque
+  ) +
+  scale_size_continuous(limits = c(0.001, maxC)) + # size range for bubbles
+  xlab("Sample") +
+  ylab("Genus") +
+  ggtitle("Relative abundances at Genus level") +
+  labs(caption = "Abundances below 0.001% were considered absent")
+
+# plot with additional options
+bubbles +
+  # facet_grid( #optional: split plots
+  # . ~ source, #metadata variable to use
+  #   scales = "free_x", # fixed, free, free_x, or free_y
+  #   space = "free" #
+  # ) +
+  scale_y_discrete(limits = rev) + # makes things alphabetical, top to bottom
+  scale_color_paletteer_d("ggsci::category20_d3") + # use paletteer to choose scheme with enough colours
+  theme(
+    axis.text.x = element_text( # X-axis text settings
+      angle = 45, # 90 for straight text, 45 for angled
+      vjust = 1, # 0.3 for straight text, 1 for angled text
+      hjust = 1
+    )
   )
-# add other ggplot2 options as desired
-ggsave("xxx-bg-Xper.png")
+
+
+ggsave("xxx-bubbles-Xpercent.png")
+```
+
+
+```{r bubble-chart-X-percent-customized}
+# collapse to genera and transform counts to composition
+ps1.genus <- tax_glom(ps.set1, taxrank = "Genus")
+ps1.genus <- prune_taxa(taxa_sums(ps1.genus) > 0, ps1.genus)
+ps1.prop <- ps1.genus %>%
+  tax_transform(trans = "compositional")
+# optional: multiply by 100 to get % as whole numbers
+ps1.prop <- transform_sample_counts(ps1.prop, function(ASV) ASV * 100)
+
+# filter out taxa that that have a maximum relative abundance of less than 5%
+psF <- filter_taxa(ps1.prop, function(x) max(x) < 3, TRUE) # desired relative abundance limit
+rmtaxa <- taxa_names(psF)
+alltaxa <- taxa_names(ps1.prop)
+myTaxa <- alltaxa[!alltaxa %in% rmtaxa]
+ps1.Xper <- prune_taxa(myTaxa, ps1.prop)
+
+# make a base chart and remove the bars
+my.bars <- plot_bar(ps1.Xper)
+my.bars$layers <- my.bars$layers[-1]
+
+# sets maximum relative abundance for figure legend dimensions
+maxC <- max(otu_table(ps1.Xper))
+
+
+# replace with bubble plot
+bubbles <- my.bars +
+  geom_point(
+    aes_string(
+      x = "Sample", # variable for x-axis
+      y = fct_reorder(
+        my.bars$data$Genus, # plot this taxonomic level (ie, my.bars$data$Genus for Genus)
+        my.bars$data$Phylum # but group them based on this level (ie, my.bars$data$Phylum for Phylum)
+      ),
+      size = "Abundance", # size of bubble is based on abundance
+      color = "Phylum", # coloured based on this level of classification (match grouping taxa above)
+      shape = "Kingdom" # changes shape based on kingdom
+    ),
+    alpha = 0.7
+  ) +
+  scale_size_continuous(limits = c(0.001, maxC)) +
+  xlab("Sample") +
+  ylab("Genus") +
+  ggtitle("Relative abundances at Genus level") +
+  labs(caption = "Abundances below 0.001% were considered absent")
+
+# plot with additional options
+bubbles +
+  facet_grid(. ~ source, # optional: metadata to split charts
+    scales = "free_x", # fixed, free, free_x, or free_y
+    space = "free" #
+  ) +
+  scale_y_discrete(limits = rev) + # makes things alphabetical inside categories
+  scale_color_paletteer_d("ggsci::category20_d3") +
+  scale_shape_manual(
+    values = c(18, 19) # triangle for archaea, circle for bacteria
+  ) +
+  theme(
+    axis.text.x = element_text( # X-axis text settings, no markup
+      angle = 45, # 90 for straight text, 45 for angled
+      vjust = 1, # 0.3 for straight text, 1 for angled text
+      hjust = 1
+    )
+  )
+
+
+ggsave("xxx-bubbles-Xpercent-grouped.png")
 ```
 ---
