@@ -1,0 +1,601 @@
+---
+title: "Variable length amplicon sequencing (ITS/18S) with DADA2 - multiple runs"
+output:
+  word_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+
+This script Kira Goff, 2025. 
+Based on https://benjjneb.github.io/dada2/ITS_workflow.html.
+New version of the benjjneb tutorial displace older versions, so if you're in the future, there may be differences. 
+
+After you are done with this script, launch the phylo-micro script from the same folder for data analysis.
+
+#R Basics
+
+For beginners: Important things to know about R!
+
+1) Because of how R works, changes made to a chunk of code that has already been run will not propogate forward. If you make a change in a code chunk, you have to rerun that code chunk and all the following code chunks.
+
+2) You can save both your RData and your RHistory if you want to to pause mid run and start again later. You will have to manually reload them to continue. 
+
+3) The easiest way to have the working directory set correctly is to make a copy of this script, place it in your desired folder, and then launch R from this RMD file. 
+
+4) Anything behind a # and in coloured text is hashed out and will not run. If it is a command, you can reactivated it by deleting the #. If it is a comment, deleting the # will make R very grumpy when it tries to parse it as code. 
+
+5) Sometimes if you're having a problem, the fastest and easiest thing to do is quit R and rerun the script from scratch. If the same problem shows up again, it's time to troubleshoot. 
+
+#Before running this script...
+
+Important things to know before running this script!
+
+1) This is the script for fungal ITS  and eukaryotic 18S data. Because of the highly variable length of the region (especially ITS) it requires different QC parameters than the 16S region.
+
+2) This script has the ability to run modularly on every sequencing run through the error correction, then combine them for downstream analysis. Every sequencing run produces unique error patterns. Because of this, every sequencing run MUST be error corrected individually, or you will introduce more errors than you started with.
+
+3) This is the version of the script for if you're working with data from MULTIPLE sequencing runs. See DADA2-ITS-single-run.RMD for if you want to combine and analyze data from multiple sequencing runs. See DADA2-16S-single-run.RMD for processing data from the eukaryotic 16S region, or DADA2-16S-multiple-runs.RMD for processing bacterial 16S data from multiple runs. 
+
+4) This script is designed for a minimum of two samples per sequencing run. If you have only one, you will need to either duplicate it or use a dummy sample from the same sequencing run.
+
+#File name requirements
+
+Before you start, rename your files. There are strict file naming requirements.
+
+1) Files must end with _R1_001.fastq.gz and _R2_001.fastq.gz
+2) The only underscores allowed in the file name are _R1_001 and _R2_001
+3) Everything in front of _R1 or _R2 will be the sample name. I recommend removing what you don't need, such as the sequencing run information prepending your sample name. 
+4) Sample names must be unique, and the forward (_R1_) and reverse (_R2_) reads for an individual sample must share a sample name.
+5) On Linux, the easiest way to do this is using the find and replace option for file renaming.
+    a) Select all of the files you wish to rename
+    b) Press F2 on the keyboard, then the 'find and replace' button
+    c) Find and replace all _ with -
+    d) Find and replace -R1- with _R1_ and -R2- with _R2_
+    e) Find any shared information you wish to remove (such as sequencer strings) but do not replace with any new text (run find-and-replace, but leave the replace field blank).
+
+Illegal file name:      AUG_24_UI2281_YS_YourName_Sample_1_SampleDescription_S5_L001_R1_001.fastq.gz
+Legal file name:        AUG-24-UI2281-YS-YourName-Sample-1-SampleDescription-S5-L001_R1_001.fastq.gz
+More useful file name:  SampleDescription_R1_001.fastq.gz
+
+#Set up workspace
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Completely clear the workspace so that no old objects are hanging around to mess with your shiny new ones.
+```{r clear-workspace}
+rm(list = ls(all = T))
+```
+
+Set working directory (where you want the final files to go). Sometimes, for some reason, you have to run this twice. 
+The environment windows should have the wd variable set as whatever the path you set below as. 
+If it's set as /lisa, run the chunk again. 
+If you continue to have trouble, make sure this script is saved in your desired folder, close R, then open R from this RMD file. 
+```{r set-working-directory}
+wd <- setwd("/path/to/your/directory") ## CHANGE THIS to a folder in your directory
+
+# If you're on Windows, the file path will probably be something like "C:\Users\path\to\your\folder". You will have to manually change all \ in all file paths to \\. "C:\\Users\\path\\to\\your\\folder".
+```
+
+If it's your first time or you have recently updated R, you may have to install one or all of these packages. 
+To run: delete the # in {#r}
+```{#r install-packages}
+##  Install dada2 from repository
+ if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+ BiocManager::install("dada2")
+
+##  Install ShortRead, Biostrings, and tictoc
+ install.packages(c("ShortRead", "Biostrings", "tictoc"), dependencies = TRUE)
+```
+
+Load the packages we're going to use.
+```{r load-packages}
+library("dada2")
+library("ShortRead")
+library("Biostrings")
+library("ggplot2")
+```
+
+#DATA SET 1
+
+##Data import
+
+Tell R where to find your raw data. This also prints the names of the files inside that folder - check the output to make sure it's correct.
+```{r set-path}
+path <- "/path/to/raw/data/1" ## CHANGE THIS to the folder with your first set of raw data
+list.files(path)
+```
+
+Read the files in the raw data folder into R, and use file names to generate sample names. This assumes you renamed your files as directed before beginning. 
+
+Reminders: Each sample name must be unique, and the only underscores are in _R1_ and _R2_.
+```{r define-names}
+# Define your forward (_R1_001) and reverse (_R2_001) reads
+fnF1 <- sort(list.files(path, pattern = "_R1_001.fastq.gz", full.names = TRUE))
+fnR1 <- sort(list.files(path, pattern = "_R2_001.fastq.gz", full.names = TRUE))
+```
+
+Remove sequences with ambiguous basecalls (Ns) and put clean sequences in a new folder.
+Any Ns will make downstream processing throw a fit. 
+```{r remove-Ns}
+fnF1.filtN <- file.path(path, "filtN", basename(fnF1)) # Put N-filtered files in filtN/ subdirectory
+fnR1.filtN <- file.path(path, "filtN", basename(fnR1))
+filterAndTrim(fnF1, fnF1.filtN, fnR1, fnR1.filtN, maxN = 0, multithread = TRUE)
+```
+
+
+##Primer removal
+
+Provide the primers you used for the ITS region. 
+These were the primers used for the dataset I was working with when I set up the script  (FunF and FunR) but please don't assume that yours are the same! 
+(FWD: ITS3tagmix1, REV: ITS4ngs; per https://mycokeys.pensoft.net/article/4852/element/3/22//. Note that the ITS3tagmix1 primer there has an extra 10 leading bp that do not match to any organisms. The FunR primer also has one less leading T than the primer in the paper.)
+
+```{r define-primers}
+FWD <- "CATCGATGAAGAACGCAG" ## CHANGE IF NEEDED
+REV <- "TCCTSCGCTTATTGATATGC" ## CHANGE IF NEEDED.
+```
+
+Check to make sure that the primers are there and correctly oriented
+
+```{r check-primer-orientations}
+allOrients <- function(primer) {
+  require(Biostrings)
+  dna <- DNAString(primer) # Biostrings works w/ DNAString objects rather than character vectors
+  orients <- c( # Create all orientations of the input sequence
+    Forward = dna, Complement = Biostrings::complement(dna), Reverse = Biostrings::reverse(dna),
+    RevComp = Biostrings::reverseComplement(dna)
+  )
+  return(sapply(orients, toString)) # Convert back to character vector
+}
+
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+FWD.orients
+
+primerHits <- function(primer, fn) {
+  nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE) # Counts number of reads in which each primer version is found
+  return(sum(nhits > 0))
+}
+rbind(
+  FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnF1.filtN[[1]]),
+  FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnR1.filtN[[1]]),
+  REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnF1.filtN[[1]]),
+  REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnR1.filtN[[1]])
+)
+```
+
+If everything has gone right:
+- Forwards reads will have the forward version of the forward primer
+- If the region was short enough for readthrough, they may have the reverse version of the reverse primer
+- Opposite true for the reverse reads 
+
+If the primers are in the wrong orientation, we will fix it while we're removing them. 
+If a very small number are incorrect, we're just going to ignore them. 
+
+
+Tell R where to find our conda installation of cutadapt and make sure it has permission to launch it and run inside of the terminal. 
+Cutadapt installation instruction here: http://cutadapt.readthedocs.io/en/stable/index.html if you're on a different machine
+```{r terminal-preparation}
+cutadapt <- "/home/lisa/miniconda3/envs/cutadapt/bin/cutadapt" # CHANGE ME to the cutadapt path on your machine
+system2(cutadapt, args = "--version") # Run shell commands from R
+```
+
+Next, we're going to use cutadapt to remove primers. 
+If the primer-check chunk had the primers in reverse orientation, change that here 
+
+This prints a lot of output, but you don't need to save it. 
+In addition to removing the primers (including read-through primers on shorter sequences), here we are doing a bit of QC. 
+We're removing any short, junky sequences, and any reads that had no primers removed from them. 
+This will speed up the filterAndTrim stage downstream. 
+```{r cutadapt-primer-trim}
+path.cut <- file.path(path, "cutadapt")
+if (!dir.exists(path.cut)) dir.create(path.cut)
+fnF1.cut <- file.path(path.cut, basename(fnF1))
+fnR1.cut <- file.path(path.cut, basename(fnR1))
+
+FWD.RC <- dada2:::rc(FWD)
+REV.RC <- dada2:::rc(REV)
+
+# Trim FWD and the reverse-complement of REV off of R1 (forward reads)
+R1.flags <- paste("-g", FWD, "-a", REV.RC)
+# Trim REV and the reverse-complement of FWD off of R2 (reverse reads)
+R2.flags <- paste("-G", REV, "-A", FWD.RC)
+# Run Cutadapt
+for (i in seq_along(fnF1)) {
+  system2(cutadapt, args = c(
+    R1.flags, R2.flags, "-n", 2, # -n 2 required to remove FWD and REV primers from reads
+    "--minimum-length=50", "--discard-untrimmed", # remove reads that are short, junky or untrimmed
+    "--cores 0", # lets cutadapt autodetect how many cores are available for use
+    "-o", fnF1.cut[i], "-p", fnR1.cut[i], # output files
+    fnF1.filtN[i], fnR1.filtN[i] # input files
+  ))
+}
+```
+
+Look at the first sample to make sure the primers were removed successfully. 
+
+```{r check-primer-removal}
+rbind(
+  FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnF1.cut[[1]]),
+  FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnR1.cut[[1]]),
+  REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnF1.cut[[1]]),
+  REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnR1.cut[[1]])
+)
+```
+
+If there's a dozen or so left, just roll with it.
+
+##QC data
+
+Read in your trimmed files and assign sample names.
+```{r define-and-extract-sample-names}
+# Forward and reverse fastq filenames have the format:
+cutF1 <- sort(list.files(path.cut, pattern = "_R1_001.fastq.gz", full.names = TRUE))
+cutR1 <- sort(list.files(path.cut, pattern = "_R2_001.fastq.gz", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format:
+get.sample.name <- function(fname) strsplit(basename(fname), "_")[[1]][1]
+sample.names <- unname(sapply(cutF1, get.sample.name))
+head(sample.names)
+
+# Assign output file names
+filtF1 <- file.path(path.cut, "filtered", basename(cutF1))
+filtR1 <- file.path(path.cut, "filtered", basename(cutR1))
+```
+
+Note: Some sequencing centres have started binning quality scores - this will show as strict bands in the plot. 
+The DADA2 branch available in R doesn't have a work around for this yet, but the command line version does.
+
+Examine the quality profile of the reads of the first 4 samples. If you have less than 4 samples, set this number as appropriate for your analysis. 
+
+Green line: mean quality score. Orange: quartiles of quality score distribution. 
+We want these to stay above a Q score of 20.
+
+Unlike the 16S bacterial pipeline, we will not be setting a strict length cutoff, as the ITS and 18S regions exhibit significant biological variation in length.
+```{r plot-quality-profiles}
+plotQualityProfile(cutF1[1:4])
+plotQualityProfile(cutR1[1:4])
+```
+
+Now we are going to do a full QC on our reads, and filter out poor quality data!
+
+There is only one parameters you can change here, but it's possible you should! 
+maxEE = c(2,2); which defines the maximum number of expected errors in the read. 
+The default is 2,2, which allows for the likelihood of two miscalled bases in the forward reads and two in the reverse reads.
+You can also play aroung with truncQ, which cuts reads the first time it encounters a Q score below the given threshold.
+
+This code also outputs the number of reads you've lost during this step. 
+If you've retained at least 75% of your reads, you are probably okay. 
+It can be tempting to try to keep as much information as possible, remember that garbage in=garbage out. 
+Including more error-prone data here will also make all future steps take longer to run. 
+
+```{r filter-and-trim}
+out1 <- filterAndTrim(cutF1, filtF1, cutR1, filtR1,
+  maxN = 0, minLen = 50, # remove any sequences with N and anything too short to be useful
+  maxEE = c(2, 2), # throws out reads that have more than this number of expected errors
+  truncQ = 2, # truncates reads the first time it sees this Q score
+  rm.phix = TRUE, # removes Illumina phiX sequences
+  compress = TRUE, multithread = TRUE # on windows, set multithread = FALSE
+)
+head(out1)
+```
+
+If you lost more than 25% of your reads here, try changing maxEE = c(2,2) to maxEE = c(2,3). 
+If you're still losing more than 25% of your reads with maxEE = c(2,3), try maxEE = c(2,4). 
+Do not go below 2,4. 
+
+Any datasets you are combining for comparison should use the same parameters.
+Your oldest dataset is almost always the worst quality one, so start with that. 
+
+Take a look at the new quality profiles.
+```{r plot-new-qualilty-profiles}
+plotQualityProfile(filtF1[1:4])
+plotQualityProfile(filtR1[1:4])
+```
+
+Optionally, write and look at a CSV of the filterAndTrim results
+```{r qc-overview}
+write.csv(out1, file = "qc_check1.csv")
+```
+
+
+##Error correction
+
+You might get error messages about how "Not all sequences were the same length." 
+You can ignore them, because we know we're working with variable length regions. 
+
+Collapse reads that encode identical sequences to reduce downstream computational times. 
+```{r dereplicate-sequences}
+derepF1 <- derepFastq(filtF1, verbose = TRUE)
+derepR1 <- derepFastq(filtR1, verbose = TRUE)
+```
+
+
+Learn error rates. 
+Error parameters vary between sequencing runs and PCR protocols, and this algorithm learns the error parameters from the data itself. 
+You cannot combine data from different sequencing runs. 
+This is a time-consuming step, but the more errors you allowed in the filter-and-trim chunk, the longer it will take.
+```{r learn-errors}
+errF1 <- learnErrors(derepF1, multithread = TRUE)
+errR1 <- learnErrors(derepR1, multithread = TRUE)
+```
+
+
+Optional: visualize error rates. 
+We only care about A2A, C2C, G2G, T2T. Those plots should be near-horizontal lines across the top of the graph.
+```{r visualize-error-rates}
+plotErrors(errF1, nominalQ = TRUE) + ggtitle("Forward")
+plotErrors(errR1, nominalQ = TRUE) + ggtitle("Reverse")
+```
+
+##Denoise and generate sequences
+
+Denoise and infer sample composition. This is a time consuming step.
+```{r denoising}
+dadaF1 <- dada(derepF1, err = errF1, multithread = TRUE)
+dadaR1 <- dada(derepR1, err = errR1, multithread = TRUE)
+dadaF1[[1]]
+dadaR1[[1]]
+```
+If you have an extremely large dataset, you might get a "NAs produced by integer overflow" warning. That is okay during this specific step.
+
+
+Merge your forward and reverse reads to get the full ITS or 18S sequences. This will take a few minutes.
+```{r merge-reads}
+merger1 <- mergePairs(dadaF1, derepF1, dadaR1, derepR1, verbose = TRUE)
+head(merger1[[1]])
+```
+
+Save your sequence table.
+```{r make-sequence-table}
+seqtab1 <- makeSequenceTable(merger1)
+saveRDS(seqtab1, "seqtab1.rds")
+```
+
+The size distribution will likely have several distinct peaks, you can trim around those if you see any weird outliers.
+
+We will combine this with your additional sample tables downstream.
+
+#DATA SET XXX
+
+Condensed code for repeating this process for addition sequencing runs before merging for analysis.
+All notes from the first block of processing remain in effect.
+
+Easiest way to check to make sure you don't run into any naming problems: 
+Paste this into a text document, find/replace xxx with your desired number, then bring those chunks back in and run them.
+
+## Import data
+
+```{r xxx-define-raw-data}
+path <- "/path/to/raw/data/xxx" ## CHANGE THIS to the folder with your second set of raw data
+list.files(path) # list the files in this folder, check output in console
+
+# Define your forward (_R1_001) and reverse (_R2_001) reads
+fnFxxx <- sort(list.files(path, pattern = "_R1_001.fastq.gz", full.names = TRUE))
+fnRxxx <- sort(list.files(path, pattern = "_R2_001.fastq.gz", full.names = TRUE))
+
+# Remove sequences with ambiguous basecalls (Ns) and put clean sequences in a new folder.
+fnFxxx.filtN <- file.path(path, "filtN", basename(fnFxxx)) # Put N-filtered files in filtN/ subdirectory
+fnRxxx.filtN <- file.path(path, "filtN", basename(fnRxxx))
+filterAndTrim(fnFxxx, fnFxxx.filtN, fnRxxx, fnRxxx.filtN, maxN = 0, multithread = TRUE)
+```
+
+##Primer removal
+
+```{r xxx-primer-check}
+# Define primers
+FWD <- "CATCGATGAAGAACGCAG" ## CHANGE IF NEEDED
+REV <- "TCCTSCGCTTATTGATATGC" ## CHANGE IF NEEDED.
+
+allOrients <- function(primer) {
+  require(Biostrings)
+  dna <- DNAString(primer) # Biostrings works w/ DNAString objects rather than character vectors
+  orients <- c( # Create all orientations of the input sequence
+    Forward = dna, Complement = Biostrings::complement(dna), Reverse = Biostrings::reverse(dna),
+    RevComp = Biostrings::reverseComplement(dna)
+  )
+  return(sapply(orients, toString)) # Convert back to character vector
+}
+
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+FWD.orients
+
+primerHits <- function(primer, fn) {
+  nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE) # Counts number of reads in which each primer version is found
+  return(sum(nhits > 0))
+}
+rbind(
+  FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFxxx.filtN[[1]]),
+  FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRxxx.filtN[[1]]),
+  REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFxxx.filtN[[1]]),
+  REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRxxx.filtN[[1]])
+)
+```
+
+We already prepped the terminal run in the terminal-preparation chunk above.
+
+Make sure to change the orientation of the primers if the above chunk showed it was necessary.
+```{r xxx-primer-removal}
+path.cut <- file.path(path, "cutadapt")
+if (!dir.exists(path.cut)) dir.create(path.cut)
+fnFxxx.cut <- file.path(path.cut, basename(fnFxxx))
+fnRxxx.cut <- file.path(path.cut, basename(fnRxxx))
+
+FWD.RC <- dada2:::rc(FWD)
+REV.RC <- dada2:::rc(REV)
+
+# Trim FWD and the reverse-complement of REV off of R1 (forward reads)
+R1.flags <- paste("-g", FWD, "-a", REV.RC)
+# Trim REV and the reverse-complement of FWD off of R2 (reverse reads)
+R2.flags <- paste("-G", REV, "-A", FWD.RC)
+# Run Cutadapt
+for (i in seq_along(fnFxxx)) {
+  system2(cutadapt, args = c(
+    R1.flags, R2.flags, "-n", 2, # -n 2 required to remove FWD and REV primers from reads
+    "--minimum-length=50", "--discard-untrimmed", # remove reads that are short, junky or untrimmed
+    "--cores 0", # lets cutadapt autodetect how many cores are available for use
+    "-o", fnFxxx.cut[i], "-p", fnRxxx.cut[i], # output files
+    fnFxxx.filtN[i], fnRxxx.filtN[i] # input files
+  ))
+}
+
+# Check-primer-removal
+rbind(
+  FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFxxx.cut[[1]]),
+  FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRxxx.cut[[1]]),
+  REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFxxx.cut[[1]]),
+  REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRxxx.cut[[1]])
+)
+```
+
+##QC and error correction
+
+```{r xxx-read-qc}
+# Forward and reverse fastq filenames have the format:
+cutFxxx <- sort(list.files(path.cut, pattern = "_R1_001.fastq.gz", full.names = TRUE))
+cutRxxx <- sort(list.files(path.cut, pattern = "_R2_001.fastq.gz", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format:
+get.sample.name <- function(fname) strsplit(basename(fname), "_")[[1]][1]
+sample.names <- unname(sapply(cutFxxx, get.sample.name))
+head(sample.names)
+
+# Assign output file names
+filtFxxx <- file.path(path.cut, "filtered", basename(cutFxxx))
+filtRxxx <- file.path(path.cut, "filtered", basename(cutRxxx))
+
+# filterAndTrim
+outxxx <- filterAndTrim(cutFxxx, filtFxxx, cutRxxx, filtRxxx,
+  maxN = 0, minLen = 50, # remove any sequences with N and anything too short to be useful
+  maxEE = c(2, 2), # throws out reads that have more than this number of expected errors
+  truncQ = 2, # truncates reads the first time it sees this Q score
+  rm.phix = TRUE, # removes Illumina phiX sequences
+  compress = TRUE, multithread = TRUE # on windows, set multithread = FALSE
+)
+head(outxxx)
+
+write.csv(outxxx, file = "qc_checkxxx.csv")
+```
+
+```{r xxx-error-correction}
+# Dereplicate sequences
+derepFxxx <- derepFastq(filtFxxx, verbose = TRUE)
+derepRxxx <- derepFastq(filtRxxx, verbose = TRUE)
+
+# Learn errors
+errFxxx <- learnErrors(derepFxxx, multithread = TRUE)
+errRxxx <- learnErrors(derepRxxx, multithread = TRUE)
+
+# Denoise and infer sample composition
+dadaFxxx <- dada(derepFxxx, err = errFxxx, multithread = TRUE)
+dadaRxxx <- dada(derepRxxx, err = errRxxx, multithread = TRUE)
+dadaFxxx[[1]]
+dadaRxxx[[1]]
+```
+
+##Generate sequences
+
+```{r xxx-merge-reads}
+mergerxxx <- mergePairs(dadaFxxx, derepFxxx, dadaRxxx, derepRxxx, verbose = TRUE)
+head(mergerxxx[[1]])
+```
+
+```{r xxx-save-sequences}
+seqtabxxx <- makeSequenceTable(mergerxxx)
+saveRDS(seqtabxxx, "seqtabxxx.rds")
+```
+
+#Chimera removal
+
+Examine your environment pane in R. Check the names in the "Data" list and "Values" list to make sure that there is one for every sample (eg., FiltF1, filtF2, ...)
+
+Combine samples from different sequencing runs into a single table. 
+```{r merge-sequencing-runs}
+seqtab <- mergeSequenceTables(seqtab1, seqtab2) ## add as many sequence tables as you generated above.
+saveRDS(seqtab, "seqtab.Rds")
+dim(seqtab)
+table(nchar(getSequences(seqtab)))
+```
+
+Remove chimeric sequences.
+```{r remove-chimeras}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus", multithread = TRUE, verbose = TRUE)
+table(nchar(getSequences(seqtab.nochim)))
+dim(seqtab.nochim)
+sum(seqtab.nochim) / sum(seqtab)
+saveRDS(seqtab.nochim, "seqtab.nochim.rds")
+```
+
+
+#Assign taxonomy
+
+Use the UNITE ITS database to assign taxonomy. 
+Please check to make sure that the version you are using is the most recent General FASTA release from https://unite.ut.ee/repository.php. 
+If it is newer version that the one below, please download the new one and update the path to the new version. 
+If you're doing 18S, use PR2 or your database of choice.
+
+We don't run fungal samples very often in the Gieg lab, so it's a good idea to check the database version. 
+```{r assign-taxonomy}
+unite.ref <- "/mnt/work-drive/databases/unite/sh_general_release_dynamic_19.02.2025.fasta" # CHANGE ME to location on your machine
+taxa <- assignTaxonomy(seqtab.nochim, unite.ref, multithread = TRUE, tryRC = TRUE)
+```
+
+Let's see what we have!
+```{r check-taxonomy}
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+Yay, it's fungus!
+
+#Data export
+
+Save the sequence variant table as a csv file
+```{r save-asv-table}
+seqnum <- paste0("ASV", seq(ncol(seqtab.nochim))) # gives unique ID (ASV1, ASV2,...) to each sequence variant
+uniqueSeqs <- as.list(colnames(seqtab.nochim)) # creates a list of the sequences
+seqtab.nochim.transposed <- t(seqtab.nochim) # transposes the matrix (ASVs in rows, samples in columns)
+rownames(seqtab.nochim.transposed) <- as.character(seqnum) # changes rownames to ASV IDs
+head(seqtab.nochim.transposed)
+
+# Re-label the first column title "ASV" for merging later
+
+seqtab.nochim.transposed <- cbind(rownames(seqtab.nochim.transposed), seqtab.nochim.transposed)
+rownames(seqtab.nochim.transposed) <- NULL
+colnames(seqtab.nochim.transposed)[1] <- "ASV"
+
+write.csv(seqtab.nochim.transposed, file = "asv_table.csv") # writes csv file
+```
+
+Merge ASV table (with read counts/abundances) with the taxonomy table (up to species level assignments) by shared variable, using all.x=T to ensure all rows are kept.  
+```{r save-taxa-table}
+taxa <- as.matrix(taxa)
+rownames(taxa) <- as.character(seqnum) # changes rownames to ASV IDs
+y <- which(is.na(taxa) == TRUE) # get index of NA values
+taxa[y] <- "Unclassified" # replace all NA values with 'Unclassified"
+head(taxa)
+
+taxa <- cbind(rownames(taxa), taxa) # Re-label the first column title "ASV" for later merging
+rownames(taxa) <- NULL
+colnames(taxa)[1] <- "ASV"
+
+write.csv(taxa, file = "taxonomy_only.csv") # writes csv file of taxonomy
+
+saveRDS(taxa, "taxtab.rds") # saves an Rdata object for phyloseq
+```
+
+Merge ASV table (with read counts/abundances) with the taxonomy table (up to species level assignments) 
+```{r save-final-table}
+clean.taxa.table <- merge(taxa, seqtab.nochim.transposed, by = "ASV", all.x = TRUE)
+write.csv(clean.taxa.table, file = "final_clean_taxa_table.csv")
+```
+
+#Downstream analysis
+
+Launch the phylo-micro.rmd script from your working directory, and continue to community analysis.
