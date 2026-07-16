@@ -1,0 +1,7 @@
+# files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+# folders
+testdata/
