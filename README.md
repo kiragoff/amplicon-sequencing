@@ -22,26 +22,26 @@ Workflows are available utilizing both **DADA2** (via R) and **QIIME2** (via she
 ### 1. DADA2 RMarkdown Pipelines (`.Rmd`)
 These interactive notebooks resolve sequence variants, with approaches tailed to the quirks of target region and sequencing technology.
 
-* **`DADA2-16S-single-run.RMD` / `DADA2-16S-multiple-runs.RMD`**
+* **[DADA2-16S-single-run.Rmd](./DADA2-16S-single-run.Rmd)** / **[DADA2-16S-multiple-runs.Rmd](./DADA2-16S-multiple-runs.Rmd)**
     * *Target:* Short-read bacterial 16S rRNA.
     * *Choose your fighter:* Use `single-run` if you have one plate/library. Use `multiple-runs` if you need to learn error rates individually for separate runs before merging the resulting sequence table.
-* **`DADA2-18S-ITS-single-run.rmd` / `DADA2-18S-ITS-multiple-runs.rmd`**
+* **[DADA2-18S-ITS-single-run.Rmd](./DADA2-18S-ITS-single-run.Rmd)** / **[DADA2-18S-ITS-multiple-runs.Rmd](./DADA2-18S-ITS-multiple-runs.Rmd)**
     * *Target:* Eukaryotic (18S) and fungal (ITS) regions.
     * *Choose your fighter:* Use `single-run` if you have one plate/library. Use `multiple-runs` if you need to learn error rates individually for separate runs before merging the resulting sequence table.
     * *Note:* Fine-tuned to handle variable-length amplicons without throwing away biologically real length variation. Requires the installation of cutadapt2 on the command line.
-* **`DADA2-full16S-nanopore.Rmd`**
+* **[DADA2-full16S-nanopore.Rmd](./DADA2-full16S-nanopore.Rmd)**
     * *Target:* High-throughput, long-read full-length (V1–V9) 16S rRNA sequencing generated on Oxford Nanopore (ONT) platforms.
     * *Note:* Unlike the short-read workflows, this pipeline collapses inferred variants into OTUs. This extra step accommodates the higher baseline error rate of Nanopore sequencing, preventing a false explosion of artificial ASVs while still preserving full-length taxonomic resolution.
    * *Versatility Note:* Because this script lacks rigid length truncation, it is fully compatible with long-read 18S or ITS datasets as long as you swap in the appropriate reference database (e.g., PR2 or UNITE).
 
 
 ### 2. QIIME2 Shell Scripts (`.sh`)
-*   **`qiime2-single-run.sh` / `qiime2-multi-run.sh`**
+*   **[qiime2-single-run.sh](./qiime2-single-run.sh)** / **[qiime2-multi-run.sh](./qiime2-multi-run.sh)**
     * Workflow for processing amplicon sequences in the QIIME2 ecosystem. 
     * *Note:* Feel free to swap DeBlur for DADA2 during denoising, or wrap in vsearch as desired. Can be run with or without collapsing ASVs to OTUs.
 
 ### 3. Downstream Visualization & Stats
-*   **`phylo-micro.RMD`**
+*   **[phylo-micro.Rmd](./phylo-micro.Rmd)**
     * The fun part! This script contains tools for ecological analysis, including taxonomic bar and bubble plots, alpha/beta diversity, heatmaps, multivariate ordination, and phylogenetic trees. If you have the final sequences, you can also use UniFrac.
     * *Integration Tip:* DADA2 outputs plug directly into this script. QIIME2 outputs will require a little bit of manual formatting/reorganizing to get them to play nice with `phyloseq`.
 
