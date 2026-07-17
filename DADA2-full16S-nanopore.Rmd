@@ -1,0 +1,493 @@
+---
+title: "DADA2 for full length 16S nanopore"
+author: "Kira Goff"
+date: "2026-07-08"
+output: html_document
+---
+
+This workflow is adapted for Oxford Nanopore full-length 16S amplicon sequencing.
+
+Unlike Illumina workflows:
+* Reads are single-end.
+* The full-length (~1500 bp) 16S amplicon is sequenced directly.
+* No paired-read merging is required.
+* Variable read lengths are expected.
+
+After completing this workflow, downstream community analyses may be performed using the script I made for other Illumina sequencing, or any or phyloseq/vegan/your favourite analysis workflow.
+
+# R Basics
+
+1) Changes to previous code chunks do not automatically propagate forward. If you modify a chunk, rerun that chunk and all following chunks.
+2) Save your workspace if you wish to pause during processing.
+3) The easiest way to keep your working directory correct is to save this Rmd inside your project folder.
+4) Text following # is a comment and is ignored by R.
+
+# Before running this script
+Important notes:
+
+1) This workflow is designed specifically for Oxford Nanopore full-length bacterial 16S sequencing from Plasmidsaurus.
+2) Error patterns are unique to every sequencing run. Process each sequencing run independently.
+3) This workflow assumes demultiplexed FASTQ files (one FASTQ per sample).
+4) This workflow assumes primers have already been removed
+
+# File naming requirements
+
+Files should have simple names. Ideally these will reflect the downstream names.
+
+Examples:
+Sample01.fastq.gz/Sample02.fastq.gz/Sample03.fastq.gz
+highsalinity.fastq.gz/tankbottom.fastq.gz
+
+Avoid spaces and special characters.
+
+**Do NOT use '.' in your file name before the file extension**
+
+**Unique sample names are required.**
+
+# SET UP
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Completely clear the workspace.
+```{r clear-workspace}
+rm(list = ls(all = TRUE))
+```
+
+
+Install packages if necessary. Don't run this if you don't need to. 
+```{#r install-packages, eval=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("dada2")
+install.packages(c(
+    "ShortRead",
+    "Biostrings",
+    "ggplot2",
+    "stringr",
+    "here"
+))
+
+```
+
+Load required packages.
+
+```{r load-packages}
+library(dada2)
+library(ShortRead)
+library(Biostrings)
+library(ggplot2)
+library(stringr)
+library(here)
+library(DECIPHER)
+```
+
+Use this to set the file extension of your files
+Change to "fastq.gz", "fa.gz", "fasta", etc. as needed
+```{r set-file-type}
+file_ext <- "fastq"
+```
+
+
+# DATA IMPORT
+
+```{r import-fastq}
+# This builds an absolute path starting from your main project folder
+path <- here("testdata", # a folder inside of the directory you launched the script from
+             "raw" # a folder inside the first folder 
+             )
+# point this towards your raw data - if they're in folder with different names, just substitute those
+# if the raw data is one folder deep, just pass one variable
+fn <- sort(list.files(
+    path,
+    pattern = paste0("\\.", file_ext, "$"), 
+    full.names = TRUE
+))
+
+print(fn) # this should list all of your files
+```
+
+
+Extract sample names.
+If you put a '.' in your sample name, this will break your naming convention
+```{r sample-names}
+sample.names <- tools::file_path_sans_ext(
+    tools::file_path_sans_ext(
+        basename(fn)
+    )
+)
+sample.names
+```
+
+# QC AND FILTERING
+
+Remove reads containing ambiguous bases (N) so downstream doesn't break.
+```{r remove-Ns}
+fn.filtN <- file.path(
+    path,
+    "filtN",
+    basename(fn)
+)
+
+# Filter out Ns, enforce long-read lengths, and sanitize quality scores
+out <- filterAndTrim(
+    fn,
+    fn.filtN,
+    maxN = 0,
+    maxEE = 25,                    # Relaxed error threshold tailored for long R10 reads 
+    minLen = 1000,                  # Drops short fragments/artifacts
+    maxLen = 1600,                  # Drops extreme chimeras/amplicons
+    rm.phix = FALSE,
+    multithread = TRUE
+)
+print(out)
+```
+
+Nanopore can read 5' -> 3' or 3' -> 5'
+Normally we'd fix directionality when removing primers
+But this data already has its primers removed
+So we're using a refernce sequence to set direction
+```{r orient-reads}
+path.filtN <- file.path(path, "filtN")
+filtN_files <- sort(list.files(
+  path.filtN, 
+  pattern = paste0("\\.", file_ext, "$"), 
+  full.names = TRUE))
+
+path.oriented <- file.path(path, "oriented")
+
+# Wipe the folder cleanly if it exists to avoid the write mode conflict
+if(dir.exists(path.oriented)) {
+    unlink(path.oriented, recursive = TRUE)
+}
+
+dir.create(path.oriented, recursive = TRUE)
+
+# Define a standard 5' -> 3' (here we're using E coli)
+# This ensures decipher knows exactly what "forward" looks like.
+ref_16s <- DNAStringSet("AGAGTTTGATCCTGGCTCAGATTGAACGCTGGCGGCAGGCCTAACACATGCAAGTCGAACGGTAACAGGAAGAAGCTTGCTTCTTTGCTGACGAGTGGCGGACGGGTGAGTAATGTCTGGGAAACTGCCTGATGGAGGGGGATAACTACTGGAAACGGTAGCTAATACCGCATAACGTCGCAAGCACAAAGAGGGGGACCTTAGGGCCTCTTGCCATCGGATGTGCCCAGATGGGATTAGCTAGTAGGTGGGGTAACGGCTCACCTAGGCGACGATCCCTAGCTGGTCTGAGAGGATGACCAGCCACACTGGAACTGAGACACGGTCCAGACTCCTACGGGAGGCAGCAGTGGGGAATATTGCACAATGGGCGCAAGCCTGATGCAGCCATGCCGCGTGTATGAAGAAGGCCTTCGGGTTGTAAAGTACTTTCAGCGGGGAGGAAGGGAGTAAAGTTAATACCTTTGCTCATTGACGTTACCCGCAGAAGAAGCACCGGCTAACTCCGTGCCAGCAGCCGCGGTAATACGGAGGGTGCAAGCGTTAATCGGAATTACTGGGCGTAAAGCGCACGCAGGCGGTTTGTTAAGTCAGATGTGAAATCCCCGGGCTCAACCTGGGAACTGCATCTGATACTGGCAAGCTTGAGTCTCGTAGAGGGGGGTAGAATTCCAGGTGTAGCGGTGAAATGCGTAGAGATCTGGAGGAATACCGGTGGCGAAGGCGGCCCCCTGGACGAAGACTGACGCTCAGGTGCGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCCGTAAACGATGTCGACTTGGAGGTTGTGCCCTTGAGGCGTGGCTTCCGGAGCTAACGCGTTAAGTCGACCGCCTGGGGAGTACGGCCGCAAGGTTAAAACTCAAATGAATTGACGGGGGCCCGCACAAGCGGTGGAGCATGTGGTTTAATTCGATGCAACGCGAAGAACCTTACCTGGTCTTGACATCCACGGAAGTTTTCAGAGATGAGAATGTGCCTTCGGGAACCGTGAGACAGGTGCTGCATGGCTGTCGTCAGCTCGTGTTGTGAAATGTTGGGTTAAGTCCCGCAACGAGCGCAACCCTTATCCTTTGTTGCCAGCGGTCCGGCCGGGAACTCAAAGGAGACTGCCAGTGATAAACTGGAGGAAGGTGGGGATGACGTCAAGTCATCATGGCCCTTACGACCAGGGCTACACACGTGCTACAATGGCGCATACAAAGAGAAGCGACCTCGCGAGAGCAAGCGGACCTCATAAAGTGCGTCGTAGTCCGGATTGGAGTCTGCAACTCGACTCCATGAAGTCGGAATCGCTAGTAATCGTGGATCAGAATGCCACGGTGAATACGTTCCCGGGCCTTGTACACACCGCCGTCACACCATGGGAGTGGGTTGCAAAAGAAGTAGGTAGCTTAACCTTCGGGAGGGCGCTTACCACTTTGTGATTCATGACTGGGGTGAAGTCGTAACAAGGTAACCGTAGGGGAACCTGCGGCTGGATCACCTCCTT")
+
+for (i in seq_along(filtN_files)) {
+    cat("Orienting file:", basename(filtN_files[i]), "\n")
+    
+    fq_raw <- readFastq(filtN_files[i])
+    dna_seqs <- sread(fq_raw)
+    
+    # Combine the reference sequence and your data into one object
+    # This places your reference sequence at index 1
+    dna_combined <- c(ref_16s, dna_seqs)
+    
+    # Run OrientNucleotides telling it that index 1 is the reference
+    dna_oriented_combined <- DECIPHER::OrientNucleotides(dna_combined, reference = 1)
+    
+    # Strip the reference sequence back out so only your reads remain
+    dna_oriented <- dna_oriented_combined[-1]
+    
+    # Track which reads were flipped 
+    is_reversed <- as.character(dna_seqs) != as.character(dna_oriented)
+    
+    # Flip the reversed reads to the same orientation
+    qual_strings <- quality(fq_raw)@quality
+    
+    if(any(is_reversed)) {
+        qual_strings[is_reversed] <- Biostrings::reverse(qual_strings[is_reversed])
+    }
+    
+    fq_clean <- ShortReadQ(
+        sread = dna_oriented,
+        quality = SFastqQuality(qual_strings), 
+        id = id(fq_raw)
+    )
+    
+    writeFastq(fq_clean, file.path(path.oriented, basename(filtN_files[i])), mode = "w")
+    
+    rm(fq_raw, dna_seqs, dna_combined, dna_oriented_combined, dna_oriented, qual_strings, fq_clean)
+    gc()
+}
+```
+
+
+
+```{r plot-initial-quality}
+# Look at the properly oriented files we just made
+oriented_files <- sort(list.files(
+    path.oriented, 
+    pattern = paste0("\\.", file_ext, "$"), 
+    full.names = TRUE
+))
+
+# Plot the first four
+plotQualityProfile(oriented_files[1:min(4, length(oriented_files))])
+```
+
+Above, we used relatively loose filtering thresholds.
+Here, we're narrowing in on the final one. 
+You can use the next few blocks to help see the length distribution
+
+```{r read-histogram}
+lengths <- unlist(lapply(oriented_files, function(f) Biostrings::width(Biostrings::readQualityScaledDNAStringSet(f))))
+hist(lengths, col = "skyblue", main = "Sequence Length Distribution", xlab = "Length (bp)", breaks = 30)
+```
+Check to see if your sample has a peak around 1320 as well - this happens in some species
+This may or may not be real depending on your data
+
+
+Overview statistics
+```{r length-summary}
+lengths <- unlist(lapply(oriented_files, function(f) Biostrings::width(Biostrings::readQualityScaledDNAStringSet(f))))
+summary(lengths)
+```
+
+
+You can use this to check the upper and lower quadrants
+```{r quadrant-check}
+lengths <- unlist(lapply(oriented_files, function(f) Biostrings::width(Biostrings::readQualityScaledDNAStringSet(f))))
+quantile(lengths, probs = c(0, 0.05, 0.1, 0.15, 0.2)) # adjust these as desired
+quantile(lengths, probs = c(0.85,0.9, 0.95, 0.99)) # adjust these as desired
+```
+
+
+Set your final filtering parameters - this is relatively quick, so feel free to iterate
+```{r final-filter-parameters}
+path.filtered <- file.path(path, "filtered")
+if(!dir.exists(path.filtered)) dir.create(path.filtered, recursive = TRUE)
+
+# Regenerate sample names from files to ensure 1:1 index alignment
+oriented_sample_names <- tools::file_path_sans_ext(basename(oriented_files))
+filt <- file.path(path.filtered, paste0(oriented_sample_names, "_filt.fastq"))
+
+track <- filterAndTrim(
+    fwd = oriented_files, 
+    filt = filt,
+    maxN = 0,
+    minLen = 1250,   
+    maxLen = 1350,   
+    maxEE = 25,      
+    truncQ = 0,      
+    compress = FALSE,
+    multithread = TRUE
+)
+
+# Force it to be a matrix if it's a single sample
+if (is.null(dim(track))) {
+    track <- matrix(track, nrow = 1, dimnames = list(oriented_sample_names, names(track)))
+}
+
+print(track)
+```
+
+Look at the overview stats below 
+Generally speaking,for a good sequencing run, we want to keep ~65-85% of the reads from raw reads to final filtered reads
+
+```{r save-filter-output}
+# Convert matrices to data frames and preserve sample names as a column
+df_out <- as.data.frame(out)
+colnames(df_out) <- c("raw_reads", "filtN_reads")
+df_out$Sample <- tools::file_path_sans_ext(basename(rownames(df_out)))
+
+df_track <- as.data.frame(track)
+colnames(df_track) <- c("oriented_reads", "final_filtered_reads")
+df_track$Sample <- tools::file_path_sans_ext(basename(rownames(df_track)))
+
+# Merge safely by Sample name
+track_table <- merge(df_out, df_track, by = "Sample", all = TRUE)
+
+# Set the row names back for standard look and print
+rownames(track_table) <- track_table$Sample
+print(track_table)
+
+write.csv(track_table, "final-filter.csv", row.names = FALSE)
+```
+
+```{r recheck-qplots}
+plotQualityProfile(filt[1:min(4, length(filt))])
+```
+
+This doesn't do too much for nanopore data in terms of unique sequences
+But it helps prep stats for downstream
+```{r dereplicate}
+# Dereplicate
+derep <- derepFastq(
+    filt,
+    verbose = TRUE
+)
+
+# If it's a single sample, wrap it in a list so it can be renamed
+if (inherits(derep, "derep")) {
+  derep <- list(derep)
+}
+
+# Apply sample name
+names(derep) <- sample.names
+```
+
+# OTU CLUSTERING
+
+Because of the error rates and patterns in nanopore, DADA2 (even with the PacBio settings) struggles
+Here, we are collapsing into OTUs, which will swallow some of the errors
+Don't go below 95% similarity
+
+```{r extract-and-pool-reads}
+all_seqs <- unique(unlist(lapply(derep, function(x) getSequences(x))))
+global_dna <- DNAStringSet(all_seqs)
+```
+
+Cluster reads at X% similarity
+```{r cluster}
+clusters <- Clusterize(
+  global_dna, 
+  method = "longest", # "overlap", "shortest", or "longest"
+  cutoff = 0.05, # cluster at 95% similarity, change as needed (1-0.95=0.05)
+  processors = NULL) # multi-threads
+
+# Check the cluster count immediately before proceeding! 
+# This needs to be a reasonable number unless you want to leave it running overnight
+new_count <- length(unique(clusters$cluster))
+cat("New number of clusters:", new_count, "\n")
+```
+Check the number of clusters and adjust your % similarity accordingly. 
+You want a few hundred to a few thousand (ie, less than 2-3k)
+But that is going to depend strongly on how similar the samples are
+If you have disparate communities, the number of clusters goes up exponentially
+Common thresholds: 99% (0.01), 97% (0.03), 95% (0.05)
+
+Extract the representative sequences
+```{r representative-sequences}
+# grab the cluster column from the clusterize dataframe
+representative_indices <- !duplicated(clusters$cluster)
+clustered_dna <- global_dna[representative_indices]
+```
+
+Align final sequences
+```{r align-sequences}
+global_align <- AlignSeqs(clustered_dna, processors = NULL, verbose = TRUE)
+```
+
+
+# ASSIGN TAXONOMY
+
+These next two steps take longer than the v4v5 because the region itself is much larger
+```{r assign-taxonomy}
+# Use 'clustered_dna' (no gaps) for database matching
+taxonomy <- assignTaxonomy(
+    clustered_dna, 
+    "/mnt/work-drive/databases/silva/current/silva_nr99_vcurrent_toGenus_trainset.fa.gz", 
+    multithread = TRUE
+)
+```
+
+```{r assign-genus}
+taxonomy <- addSpecies(taxonomy, 
+                       "/mnt/work-drive/databases/silva/current/silva_vcurrent_assignSpecies.fa.gz"
+                       )
+```
+
+# SAVE AND OUTPUT
+
+Gather data, format for output, and see most abundant OTUs
+```{r data-wrangling}
+# Visual data check (removing sequence row names for display only)
+taxa.print <- taxonomy
+rownames(taxa.print) <- NULL
+cat("Top taxonomic assignments:\n")
+print(head(taxa.print))
+
+
+# Build abundance tables from clustering
+# Map raw sequences to their original sample abundances
+# Create a master lookup vector of counts for every unique raw sequence across all samples
+raw_seq_counts <- setNames(unlist(lapply(derep, function(x) x$uniques)), 
+                           unlist(lapply(derep, function(x) names(x$uniques))))
+
+# Extract cluster membership mapping
+# Ensure we are handling whatever format Clusterize outputted (data.frame vs vector)
+cluster_assignments <- if(is.data.frame(clusters)) clusters$cluster else clusters
+names(cluster_assignments) <- all_seqs
+
+# Sum up the abundances of all raw sequences within each cluster
+# Map cluster IDs back to rows, making an OTU/ASV count matrix
+cluster_names <- paste0("OTU", seq_along(clustered_dna)) # using OTU here since it's a 95% cluster
+unique_clusters <- unique(cluster_assignments)
+
+# Loop through samples to rebuild the sample x cluster abundance table
+sample_names <- names(derep)
+counts_matrix <- matrix(0, nrow = length(unique_clusters), ncol = length(sample_names),
+                        dimnames = list(cluster_names, sample_names))
+
+for (s in sample_names) {
+    sample_uniques <- derep[[s]]$uniques
+    seq_strs <- names(sample_uniques)
+    
+    # Use unname() here to strip out the name attributes to help out match()
+    s_cluster_ids <- unname(cluster_assignments[seq_strs])
+    matrix_row_indices <- match(s_cluster_ids, unique_clusters)
+    
+    # Generate and sort sample sums/otus
+    if(length(matrix_row_indices) > 0) {
+        sample_sums <- aggregate(unname(sample_uniques) ~ matrix_row_indices, FUN = sum)
+        counts_matrix[sample_sums$matrix_row_indices, s] <- sample_sums$`unname(sample_uniques)`
+    }
+}
+```
+
+Final output tables
+
+```{r save-data}
+# Format Abundance/OTU Table
+otu_table_transposed <- data.frame(ASV = rownames(counts_matrix), counts_matrix, check.names = FALSE)
+write.csv(otu_table_transposed, file = "asv_table.csv", row.names = FALSE)
+
+# Format Taxonomy Table
+tax1 <- as.matrix(taxonomy)
+rownames(tax1) <- cluster_names # standardizes IDs matching the count table
+
+# Replace NA values with 'Unclassified'
+tax1[is.na(tax1)] <- "Unclassified"
+
+tax1_df <- data.frame(ASV = rownames(tax1), tax1, row.names = NULL)
+write.csv(tax1_df, file = "taxonomy_only.csv", row.names = FALSE)
+saveRDS(tax1, "taxtab.rds") # Saves an R object ready for phyloseq
+
+# Merge and output final unified table
+clean.taxa.table <- merge(tax1_df, otu_table_transposed, by = "ASV", all.x = TRUE)
+write.csv(clean.taxa.table, file = "final_clean_taxa_table.csv", row.names = FALSE)
+
+cat("All files successfully exported! You're done.\n")
+```
+
+Quick overview of our output!
+```{r}
+# Create a list where each element is a sample containing only its present OTUs
+unique_otus_per_sample <- apply(counts_matrix, 2, function(x) names(x[x > 0]))
+
+# Count how many OTUs have a score > 0 in each sample column
+# if you have one sample, this will show you reads/OTU
+sapply(unique_otus_per_sample, length)
+```
+These numbers are probably going to be lower than your v4v5, especially if you clustered at a 95% threshold.
+This comes from a couple of sources:
+- primer bias
+- the ASV to OTU collapse
+- the shallower sequencing depth
+- the fact that archaea are mostly absent
+
+```{r abundance-overview}
+# Calculate relative abundance per sample (columns)
+rel_abund <- apply(counts_matrix, 2, function(x) x / sum(x))
+
+# Count how many OTUs are > 1% (0.01) in each sample
+dominant_otu_counts <- apply(rel_abund, 2, function(x) sum(x > 0.01))
+
+# Format into a clean summary table
+summary_table <- data.frame(
+  Sample = names(dominant_otu_counts),
+  Total_OTUs = sapply(unique_otus_per_sample, length),
+  OTUs_over_1percent = dominant_otu_counts,
+  row.names = NULL
+)
+
+print(summary_table)
+```
+
