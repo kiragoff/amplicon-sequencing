@@ -47,7 +47,7 @@ These interactive notebooks resolve sequence variants, with approaches tailed to
 
 ---
 
-## 📊 Intermediate Results & Parameterization
+## Intermediate Results & Parameterization
 
 Don't worry about figuring out the correct settings beforehand. A lot are going to be based on your individual datasets. All scripts contain built-in documentation and notes on how to choose parameters based on your intermediate results. 
 
@@ -55,7 +55,7 @@ As you progress through the quality profiles and intermediate plots (like DADA2 
 
 ---
 
-## 🛠️ Customization & R "Guardrails"
+## Customization & R "Guardrails"
 
 Throughout the R scripts, you will find comments indicating that certain metadata or files "must be formatted a certain way." 
 
